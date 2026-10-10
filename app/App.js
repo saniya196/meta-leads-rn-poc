@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Animated,
   FlatList,
   StyleSheet,
@@ -14,7 +13,7 @@ import { io } from 'socket.io-client';
 const API_URL = 'https://unconsummated-della-ectromelic.ngrok-free.dev';
 
 function getLeadId(lead, index) {
-  return String(lead.leadgen_id || lead.id || `lead-${index}`);
+  return String(lead.id || lead.leadgen_id || `lead-${index}`);
 }
 
 function getLeadFields(lead) {
@@ -38,7 +37,7 @@ function getFieldValue(fields, ...names) {
 }
 
 function formatReceivedTime(lead) {
-  const value = lead.received_at || lead.receivedAt || lead.created_time;
+  const value = lead.receivedAt || lead.received_at || lead.created_time;
   if (!value) {
     return 'Time unavailable';
   }
@@ -48,16 +47,21 @@ function formatReceivedTime(lead) {
     return 'Time unavailable';
   }
 
-  return `Received ${date.toLocaleTimeString([], {
-    hour: 'numeric',
+  return date.toLocaleTimeString([], {
+    hour: '2-digit',
     minute: '2-digit',
-  })}`;
+    second: '2-digit',
+    hour12: true,
+  });
 }
 
 function LeadCard({ lead }) {
   const fields = getLeadFields(lead);
   const [highlight] = useState(
-    () => new Animated.Value(lead.__highlight ? 0 : 1),
+    () =>
+      new Animated.Value(
+        lead.__highlightAt && Date.now() - lead.__highlightAt < 2000 ? 0 : 1,
+      ),
   );
   const name =
     getFieldValue(fields, 'full_name', 'name') ||
@@ -69,14 +73,18 @@ function LeadCard({ lead }) {
   const phone = getFieldValue(fields, 'phone', 'phone_number');
 
   useEffect(() => {
-    if (lead.__highlight) {
+    const remainingDuration = lead.__highlightAt
+      ? Math.max(0, 2000 - (Date.now() - lead.__highlightAt))
+      : 0;
+    if (remainingDuration > 0) {
+      highlight.setValue(0);
       Animated.timing(highlight, {
         toValue: 1,
-        duration: 1400,
+        duration: remainingDuration,
         useNativeDriver: false,
       }).start();
     }
-  }, [highlight, lead.__highlight]);
+  }, [highlight, lead.__highlightAt]);
 
   return (
     <Animated.View
@@ -101,11 +109,9 @@ function LeadCard({ lead }) {
 export default function App() {
   const [leads, setLeads] = useState([]);
   const [isOnline, setIsOnline] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
     const socket = io(API_URL, { transports: ['websocket'] });
-    let hasConnected = false;
     let activeFetchController;
 
     function loadLeads() {
@@ -128,23 +134,38 @@ export default function App() {
             throw new Error('The leads endpoint did not return an array');
           }
           setLeads((currentLeads) => {
-            const highlightedById = new Map(
+            const recentArrivalsById = new Map(
               currentLeads
-                .filter((lead) => lead.__highlight)
+                .filter(
+                  (lead) =>
+                    lead.__highlightAt &&
+                    Date.now() - lead.__highlightAt < 2000,
+                )
                 .map((lead, index) => [getLeadId(lead, index), lead]),
             );
-            const fetchedIds = new Set(
-              data.map((lead, index) => getLeadId(lead, index)),
-            );
-            const refreshedLeads = data.map(
-              (lead, index) => highlightedById.get(getLeadId(lead, index)) || lead,
-            );
-            const arrivalsMissingFromResponse = currentLeads.filter(
-              (lead, index) =>
-                lead.__highlight && !fetchedIds.has(getLeadId(lead, index)),
-            );
+            const mergedById = new Map();
+            data.forEach((lead, index) => {
+              const id = getLeadId(lead, index);
+              const recentArrival = recentArrivalsById.get(id);
+              mergedById.set(
+                id,
+                recentArrival
+                  ? {
+                      ...recentArrival,
+                      ...lead,
+                      __highlightAt: recentArrival.__highlightAt,
+                    }
+                  : lead,
+              );
+            });
+            const responseIds = new Set(mergedById.keys());
+            const arrivalsMissingFromResponse = Array.from(
+              recentArrivalsById.entries(),
+            )
+              .filter(([id]) => !responseIds.has(id))
+              .map(([, lead]) => lead);
 
-            return [...arrivalsMissingFromResponse, ...refreshedLeads];
+            return [...arrivalsMissingFromResponse, ...mergedById.values()];
           });
         })
         .catch((error) => {
@@ -155,25 +176,22 @@ export default function App() {
         .finally(() => {
           if (activeFetchController === fetchController) {
             activeFetchController = null;
-            setIsLoading(false);
           }
         });
     }
 
     socket.on('connect', () => {
       setIsOnline(true);
-      if (hasConnected) {
-        loadLeads();
-      }
-      hasConnected = true;
+      loadLeads();
     });
     socket.on('disconnect', () => setIsOnline(false));
     socket.on('connect_error', () => setIsOnline(false));
     socket.on('new_lead', (lead) => {
       const receivedLead = {
         ...lead,
-        received_at: lead.received_at || new Date().toISOString(),
-        __highlight: true,
+        receivedAt:
+          lead.receivedAt || lead.received_at || new Date().toISOString(),
+        __highlightAt: Date.now(),
       };
       const leadId = getLeadId(receivedLead);
       setLeads((currentLeads) => [
@@ -224,11 +242,7 @@ export default function App() {
         keyExtractor={getLeadId}
         ListEmptyComponent={
           <View style={styles.emptyState}>
-            {isLoading ? (
-              <ActivityIndicator color="#16834a" />
-            ) : (
-              <Text style={styles.emptyText}>Waiting for leads...</Text>
-            )}
+            <Text style={styles.emptyText}>Waiting for leads...</Text>
           </View>
         }
         renderItem={({ item }) => <LeadCard lead={item} />}
