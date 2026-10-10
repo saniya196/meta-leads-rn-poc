@@ -17,6 +17,12 @@ const leads = [];
 const pendingLeadIds = new Set();
 const port = process.env.PORT || 3000;
 
+for (const variable of ['VERIFY_TOKEN', 'PAGE_TOKEN', 'APP_SECRET']) {
+  if (!process.env[variable]) {
+    console.warn(`Warning: ${variable} is not configured`);
+  }
+}
+
 app.use(cors());
 app.use(
   express.json({
@@ -47,8 +53,8 @@ app.get('/debug/fake-lead', (req, res) => {
     phone: `+1555${String(Math.floor(Math.random() * 10000000)).padStart(7, '0')}`,
   };
 
-  saveLead(lead);
-  res.status(201).json(lead);
+  const savedLead = saveLead(lead);
+  res.status(201).json(savedLead);
 });
 
 app.get('/webhook', (req, res) => {
@@ -65,10 +71,11 @@ app.get('/webhook', (req, res) => {
   if (
     mode === 'subscribe' &&
     process.env.VERIFY_TOKEN &&
-    verifyToken === process.env.VERIFY_TOKEN
+    verifyToken === process.env.VERIFY_TOKEN &&
+    typeof challenge === 'string'
   ) {
     console.log('GET /webhook verification successful');
-    return res.status(200).type('text/plain').send(challenge);
+    return res.status(200).type('text/plain; charset=utf-8').send(challenge);
   }
 
   console.log('GET /webhook verification failed');
@@ -129,7 +136,8 @@ function saveLead(lead) {
   leads.unshift(receivedLead);
   console.log('Lead stored in memory', { leadgen_id: receivedLead.leadgen_id });
   io.emit('new_lead', receivedLead);
-  console.log('Emitted new_lead event', { leadgen_id: receivedLead.leadgen_id });
+  console.log('Lead emitted', { leadgen_id: receivedLead.leadgen_id });
+  return receivedLead;
 }
 
 async function processWebhook(body) {
@@ -184,18 +192,21 @@ async function processWebhook(body) {
           ...extractFieldData(leadDetails.field_data),
         };
 
-        console.log('Graph API lead details received', {
+        console.log('Lead fetched from Graph API', {
           leadgen_id: leadgenId,
         });
         saveLead(lead);
       } catch (error) {
-        console.log('Graph API lead lookup failed', {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        console.warn('Graph API lead lookup failed', {
           leadgen_id: leadgenId,
-          error: error.message,
+          error: errorMessage,
         });
         saveLead({
           ...createLeadMetadata(value),
           error: true,
+          error_message: errorMessage,
         });
       } finally {
         pendingLeadIds.delete(leadIdKey);
@@ -212,7 +223,7 @@ app.post('/webhook', (req, res) => {
     return res.sendStatus(401);
   }
 
-  console.log('POST /webhook signature verified');
+  console.log('Webhook signature valid');
   res.sendStatus(200);
 
   setImmediate(() => {
