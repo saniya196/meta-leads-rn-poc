@@ -122,10 +122,14 @@ function extractFieldData(fieldData) {
 }
 
 function saveLead(lead) {
-  leads.unshift(lead);
-  console.log('Lead stored in memory', { leadgen_id: lead.leadgen_id });
-  io.emit('new_lead', lead);
-  console.log('Emitted new_lead event', { leadgen_id: lead.leadgen_id });
+  const receivedLead = {
+    ...lead,
+    received_at: new Date().toISOString(),
+  };
+  leads.unshift(receivedLead);
+  console.log('Lead stored in memory', { leadgen_id: receivedLead.leadgen_id });
+  io.emit('new_lead', receivedLead);
+  console.log('Emitted new_lead event', { leadgen_id: receivedLead.leadgen_id });
 }
 
 async function processWebhook(body) {
