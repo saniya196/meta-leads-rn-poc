@@ -162,15 +162,26 @@ async function processWebhook(body) {
       }
 
       const leadIdKey = String(leadgenId);
+      const isTest = leadIdKey === '444444444444';
       if (
-        pendingLeadIds.has(leadIdKey) ||
-        leads.some((lead) => String(lead.leadgen_id) === leadIdKey)
+        !isTest &&
+        (pendingLeadIds.has(leadIdKey) ||
+          leads.some((lead) => String(lead.leadgen_id) === leadIdKey))
       ) {
         console.log('Skipping duplicate lead', { leadgen_id: leadgenId });
         continue;
       }
 
-      pendingLeadIds.add(leadIdKey);
+      if (!isTest) {
+        pendingLeadIds.add(leadIdKey);
+      }
+      const leadMetadata = {
+        ...createLeadMetadata(value),
+        leadgen_id: isTest
+          ? `test-${Date.now()}-${crypto.randomUUID()}`
+          : leadgenId,
+        ...(isTest ? { leadgen_id_raw: leadgenId, isTest: true } : {}),
+      };
       console.log('Fetching lead details from Graph API', {
         leadgen_id: leadgenId,
       });
@@ -188,8 +199,15 @@ async function processWebhook(body) {
 
         const leadDetails = await response.json();
         const lead = {
-          ...createLeadMetadata(value),
+          ...leadMetadata,
           ...extractFieldData(leadDetails.field_data),
+          ...(isTest
+            ? {
+                leadgen_id: leadMetadata.leadgen_id,
+                leadgen_id_raw: leadMetadata.leadgen_id_raw,
+                isTest: true,
+              }
+            : {}),
         };
 
         console.log('Lead fetched from Graph API', {
@@ -204,12 +222,14 @@ async function processWebhook(body) {
           error: errorMessage,
         });
         saveLead({
-          ...createLeadMetadata(value),
+          ...leadMetadata,
           error: true,
           error_message: errorMessage,
         });
       } finally {
-        pendingLeadIds.delete(leadIdKey);
+        if (!isTest) {
+          pendingLeadIds.delete(leadIdKey);
+        }
       }
     }
   }
